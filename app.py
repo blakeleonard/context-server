@@ -1,110 +1,227 @@
-from flask import Flask, request, escape, jsonify
+from os import getenv
+from re import match
+from flask import Flask, request
 from helpers.context_db import ContextDb
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 
 app = Flask(__name__)
+app.config["JWT_SECRET_KEY"] = getenv("JWT_SECRET_KEY", "super-secret")
+jwt = JWTManager(app)
+
+EMAIL_REGEX = r"""(?:[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*|"(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21\x23-\x5b\x5d-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])*")@(?:(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?|\[(?:(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9]))\.){3}(?:(2(5[0-5]|[0-4][0-9])|1[0-9][0-9]|[1-9]?[0-9])|[a-z0-9-]*[a-z0-9]:(?:[\x01-\x08\x0b\x0c\x0e-\x1f\x21-\x5a\x53-\x7f]|\\[\x01-\x09\x0b\x0c\x0e-\x7f])+)\])"""
+PASSWORD_REGEX = r"""^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&])[A-Za-z\d@$!%*#?&]{8,}$"""
 
 
-@app.route("/api/register_user/", methods=["POST"])
+@app.route("/register_user", methods=["POST"])
 def register_user():
-    request_dict = request.get_json()
-    if not request_dict.get("unique_contact_id"):
-        return {"error": "Missing unique contact id."}
-    elif len(request_dict["unique_contact_id"]) < 10 or len(request_dict["unique_contact_id"]) > 20:
-        return {"error": "Unique contact id must be 10 - 20 characters in length."}
+    if not request.is_json:
+        return {"msg": "Missing JSON in request."}, 400
+    if not request.json.get("email"):
+        return {"msg": "Missing email."}, 400
+    if not request.json.get("password"):
+        return {"msg": "Missing password."}, 400
+    if not match(EMAIL_REGEX, request.json["email"]):
+        return {"msg": "Invalid email."}, 400
+    if not match(PASSWORD_REGEX, request.json["password"]):
+        return {"msg": "Invalid password."}, 400
 
     db = ContextDb()
-    response = db.register_user(request_dict["unique_contact_id"])
+    response = db.register_user(request.json["email"], request.json["password"])
     db.close()
 
     if response.get("id"):
         return {"id": response["id"]}
-    elif response.get("error"):
-        return {"error": response["error"]}
-    return {"error": "User not registered."}
+    if response.get("msg"):
+        return {"msg": response["msg"]}, 500
+    return {"msg": "User not registered."}, 500
 
 
-REQUIRED_MESSAGE_FIELDS = ["recipient_unique_contact_id", "sent_from_sender_at", "is_encrypted", "body"]
-
-
-@app.route("/api/send_message/<sender_id>", methods=["POST"])
-def send_message(sender_id):
-    message = request.get_json()
-    if not message:
-        return {"error": "Missing message data."}
-    for field in REQUIRED_MESSAGE_FIELDS:
-        if not message.get(field):
-            return {"error": f"Message data is missing {field}."}
+@app.route("/login", methods=["POST"])
+def login():
+    if not request.is_json:
+        return {"msg": "Missing JSON in request"}, 400
+    if not request.json.get("email"):
+        return {"msg": "Missing email."}, 400
+    if not request.json.get("password"):
+        return {"msg": "Missing password."}, 400
 
     db = ContextDb()
+    user_id = db.get_user_id_by_email(request.json["email"])
+    if not user_id:
+        return {"msg": "Email does not belong to a registered user."}, 401
+    authenticated = db.check_password(user_id, request.json["password"])
+    db.close()
+    if authenticated is None:
+        return {"msg": "Error while attempting to check password."}, 500
+    if not authenticated:
+        return {"msg": "Bad username or password."}, 401
+
+    access_token = create_access_token(identity=request.json["email"])
+    return {"id": user_id, "access_token": access_token}
+
+
+@app.route("/change_password/<user_id>", methods=["POST"])
+@jwt_required
+def change_password(user_id):
+    if not user_id:
+        return {"msg": "Missing user id."}, 400
+    if not request.is_json:
+        return {"msg": "Missing JSON in request"}, 400
+    if not request.json.get("old_password"):
+        return {"msg": "Missing old password."}, 400
+    if not request.json.get("new_password"):
+        return {"msg": "Missing new password."}, 400
+
+    db = ContextDb()
+    email = db.get_user_email_by_id(user_id)
+    if not email:
+        return {"msg": "User id does not belong to a registered user."}, 401
+    if email != get_jwt_identity():
+        return {"msg": "User is not authorized."}, 401
+
+    password_changed = db.change_password(user_id, request.json["old_password"], request.json["new_password"],)
+    db.close()
+    if not password_changed:
+        return {"msg": "Password Change failed."}, 500
+
+    return {"password_changed_for_user_id": user_id}
+
+
+@app.route("/delete_user/<user_id>", methods=["DELETE"])
+@jwt_required
+def delete_user(user_id):
+    if not user_id:
+        return {"msg": "Missing user id."}, 400
+    if not request.is_json:
+        return {"msg": "Missing JSON in request"}, 400
+    if not request.json.get("password"):
+        return {"msg": "Missing password."}, 400
+
+    db = ContextDb()
+    email = db.get_user_email_by_id(user_id)
+    if not email:
+        return {"msg": "User id does not belong to a registered user."}, 401
+    if email != get_jwt_identity():
+        return {"msg": "User is not authorized."}, 401
+
+    messages_deleted = db.delete_messages(user_id, None)
+    if not messages_deleted:
+        return {"msg": "User message deletion failed.  User not deleted."}, 500
+
+    user_deleted = db.delete_user(user_id, request.json["password"])
+    db.close()
+    if not user_deleted:
+        return {"msg": "User deletion failed."}, 500
+
+    return {"deleted_user_id": user_id}
+
+
+@app.route("/messages/<user_id>", methods=["GET", "POST", "DELETE"])
+@jwt_required
+def messages(user_id):
+    if request.method == "GET":
+        return get_messages(user_id, request)
+    elif request.method == "POST":
+        return send_message(user_id, request)
+    elif request.method == "DELETE":
+        return delete_messages(user_id, request)
+
+
+REQUIRED_MESSAGE_FIELDS = ["unique_id", "recipient_email", "sent_from_sender_at", "encrypted_id", "hmac", "body"]
+
+
+def send_message(sender_id, request):
     if not sender_id:
-        if not message.get("sender_unique_contact_id"):
-            return {"error": "Either sender id or sender unique contact id must be present."}
-        sender_id = db.get_user_id_by_unique_contact_id(message["sender_unique_contact_id"])
-        if not sender_id:
-            return {"error": "Sender unique contact id does not belong to a registered user."}
-        message.pop("sender_unique_contact_id")
-    else:
-        sender_unique_contact_id = db.get_user_unique_contact_id_by_id(sender_id)
-        if not sender_unique_contact_id:
-            return {"error": "Sender id does not belong to a registered user."}
+        return {"msg": "Sender id is missing."}, 400
+    if not request.is_json:
+        return {"msg": "Missing JSON in request"}, 400
+    message = request.json
+    for field in REQUIRED_MESSAGE_FIELDS:
+        if not message.get(field):
+            return {"msg": f"Message data is missing {field}."}, 400
+    if len(message) != len(REQUIRED_MESSAGE_FIELDS):
+        return {"msg": "Message data contains unknown fields."}, 400
+
+    db = ContextDb()
+    email = db.get_user_email_by_id(sender_id)
+    if not email:
+        return {"msg": "Sender id does not belong to a registered user."}, 401
+    if email != get_jwt_identity():
+        return {"msg": "User is not authorized."}, 401
     message["sender_id"] = int(sender_id)
 
-    recipient_id = db.get_user_id_by_unique_contact_id(message["recipient_unique_contact_id"])
+    recipient_id = db.get_user_id_by_email(message["recipient_email"])
     if not recipient_id:
-        return {"error": "Recipient unique contact id does not belong to a registered user."}
+        return {"msg": "Recipient email does not belong to a registered user."}, 401
     message["recipient_id"] = int(recipient_id)
-    message.pop("recipient_unique_contact_id")
+    message.pop("recipient_email")
 
     if message["sender_id"] == message["recipient_id"]:
-        return {"error": "Sender and Recipient are the same."}
+        return {"msg": "Sender and Recipient are the same."}, 400
 
-    if len(message) != 5:
-        return {"error": "Message data contains unknown fields."}
+    if db.does_unique_id_exist(sender_id, message["unique_id"]):
+        return {"msg": "Message has already been sent."}, 400
 
     saved_in_db_at = db.send_message(message)
     db.close()
 
     if saved_in_db_at:
         return {"saved_in_db_at": saved_in_db_at}
-    return {"error": "Message not saved in database."}
+    return {"msg": "Message not saved in database."}, 500
 
 
-@app.route("/api/get_messages/<recipient_id>", methods=["GET"])
-def get_messages(recipient_id):
+def get_messages(recipient_id, request):
     if not recipient_id:
-        return {"error": "Missing recipient id."}
+        return {"msg": "Missing recipient id."}, 400
 
     db = ContextDb()
-    recipient_unique_contact_id = db.get_user_unique_contact_id_by_id(recipient_id)
-    if not recipient_unique_contact_id:
-        return {"error": "Recipient id does not belong to a registered user."}
+    email = db.get_user_email_by_id(recipient_id)
+    if not email:
+        return {"msg": "Recipient id does not belong to a registered user."}, 401
+    if email != get_jwt_identity():
+        return {"msg": "User is not authorized."}, 401
 
-    messages = db.get_messages(recipient_id)
+    get_all = request.args.get("all")
+    if not get_all:
+        messages_last_checked_at = db.get_user_messages_last_checked_at_by_id(recipient_id)
+        if not messages_last_checked_at:
+            return {"msg": "User missing messages last checked at field."}, 500
+
+    messages = db.get_messages(recipient_id, messages_last_checked_at)
     if messages is None:
-        return {"error": "Problem while attempting to retreive messages from database."}
+        return {"msg": "Problem while attempting to retreive messages from database."}, 500
     db.update_messages_last_checked_at(recipient_id)
     db.close()
 
     return {"messages": messages}
 
 
-@app.route("/api/delete_messages/<recipient_id>", methods=["DELETE"])
-def delete_messages(recipient_id):
+def delete_messages(recipient_id, request):
     if not recipient_id:
-        return {"error": "Missing recipient id."}
-    request_dict = request.get_json()
-    if not request_dict.get("message_ids") or len(request_dict["message_ids"]) < 1:
-        return {"error": "Missing message ids."}
+        return {"msg": "Missing recipient id."}, 400
+    delete_all = request.args.get("all")
+    if not delete_all:
+        request_dict = request.json
+        if not request_dict:
+            return {"msg": "Missing JSON in request"}, 400
+        if not request_dict.get("message_ids") or len(request_dict["message_ids"]) < 1:
+            return {"msg": "Missing message ids."}, 400
 
     db = ContextDb()
-    recipient_unique_contact_id = db.get_user_unique_contact_id_by_id(recipient_id)
-    if not recipient_unique_contact_id:
-        return {"error": "Recipient id does not belong to a registered user."}
+    email = db.get_user_email_by_id(recipient_id)
+    if not email:
+        return {"msg": "Recipient id does not belong to a registered user."}, 401
+    if email != get_jwt_identity():
+        return {"msg": "User is not authorized."}, 401
 
-    response = db.delete_messages(recipient_id, request_dict["message_ids"])
+    if delete_all:
+        messages_deleted = db.delete_messages(recipient_id, None)
+    else:
+        messages_deleted = db.delete_messages(recipient_id, request_dict["message_ids"])
+
     db.close()
 
-    return {"deleted_all": response}
+    return {"messages_deleted": messages_deleted}
 
 
 if __name__ == "__main__":
