@@ -142,8 +142,9 @@ def messages(user_id):
 
 
 def get_messages(recipient_id, request, db):
+    messages_last_checked_at = None
     get_all = request.args.get("all")
-    if not get_all:
+    if get_all is None or get_all.lower() != "true":
         messages_last_checked_at = db.get_user_messages_last_checked_at_by_id(recipient_id)
         if not messages_last_checked_at:
             return {"msg": "User missing messages last checked at field."}, 500
@@ -194,7 +195,7 @@ def send_message(sender_id, request, db):
 
 def delete_messages(recipient_id, request, db):
     delete_all = request.args.get("all")
-    if delete_all:
+    if delete_all is not None and delete_all.lower() == "true":
         messages_deleted = db.delete_messages(recipient_id, None)
     else:
         request_dict = request.json

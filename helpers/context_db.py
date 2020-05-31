@@ -215,7 +215,13 @@ class ContextDb:
                 while True:
                     message = cur.fetchone()
                     if message:
-                        messages.append(dict(message))
+                        message = dict(message)
+                        message["sender_email"] = self.get_user_email_by_id(message["sender_id"])
+                        message.pop("id")
+                        message.pop("recipient_id")
+                        message.pop("saved_at")
+                        message.pop("sender_id")
+                        messages.append(message)
                     else:
                         break
                 return messages
@@ -228,8 +234,12 @@ class ContextDb:
         print("Deleting messages...")
         delete_statement = f"delete from {MESSAGES_TABLE} where recipient_id = {recipient_id}"
         if message_ids is not None:
-            message_ids = tuple(message_ids)
-            delete_statement = delete_statement + f" and id in {message_ids}"
+            if len(message_ids) == 1:
+                message_id = message_ids[0]
+                delete_statement = delete_statement + f" and id = {message_id}"
+            else:
+                message_ids = tuple(message_ids)
+                delete_statement = delete_statement + f" and id in {message_ids}"
         try:
             with self.connection.cursor() as cur:
                 cur.execute(delete_statement)
