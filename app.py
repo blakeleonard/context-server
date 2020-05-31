@@ -48,7 +48,7 @@ def login():
     db = ContextDb()
     user_id = db.get_user_id_by_email(request.json["email"])
     if not user_id:
-        return {"msg": "Email does not belong to a registered user."}, 401
+        return {"msg": "Email does not belong to a registered user."}, 404
     authenticated = db.check_password(user_id, request.json["password"])
     db.close()
     if authenticated is None:
@@ -77,7 +77,7 @@ def change_password(user_id):
     db = ContextDb()
     email = db.get_user_email_by_id(user_id)
     if not email:
-        return {"msg": "User id does not belong to a registered user."}, 401
+        return {"msg": "User id does not belong to a registered user."}, 404
     if email != get_jwt_identity():
         return {"msg": "User is not authorized."}, 401
 
@@ -102,7 +102,7 @@ def delete_user(user_id):
     db = ContextDb()
     email = db.get_user_email_by_id(user_id)
     if not email:
-        return {"msg": "User id does not belong to a registered user."}, 401
+        return {"msg": "User id does not belong to a registered user."}, 404
     if email != get_jwt_identity():
         return {"msg": "User is not authorized."}, 401
 
@@ -129,7 +129,7 @@ def messages(user_id):
     db = ContextDb()
     email = db.get_user_email_by_id(user_id)
     if not email:
-        return {"msg": "User id does not belong to a registered user."}, 401
+        return {"msg": "User id does not belong to a registered user."}, 404
     if email != get_jwt_identity():
         return {"msg": "User is not authorized."}, 401
 
@@ -175,7 +175,7 @@ def send_message(sender_id, request, db):
 
     recipient_id = db.get_user_id_by_email(message["recipient_email"])
     if not recipient_id:
-        return {"msg": "Recipient email does not belong to a registered user."}, 401
+        return {"msg": "Recipient email does not belong to a registered user."}, 404
     message["recipient_id"] = int(recipient_id)
     message.pop("recipient_email")
 
