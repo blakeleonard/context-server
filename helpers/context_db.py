@@ -1,4 +1,4 @@
-from psycopg2 import connect
+from psycopg2 import connect, Binary
 from psycopg2.extensions import AsIs
 from psycopg2.extras import DictCursor
 from pypika import Query, Table
@@ -109,11 +109,12 @@ class ContextDb:
 
     def update_messages_last_checked_at(self, user_id):
         print("Updating user messages last checked at...")
+        t = Table(USERS_TABLE)
         current_time = str(datetime.utcnow())
-        update_statement = f"update {USERS_TABLE} set messages_last_checked_at = '{current_time}' where id = {user_id}"
+        query = Query.update(t).set(t.messages_last_checked_at, current_time).where(t.id == user_id)
         try:
             with self.connection.cursor() as cur:
-                cur.execute(update_statement)
+                cur.execute(str(query))
                 self.connection.commit()
                 return True
         except Exception as e:
@@ -143,20 +144,19 @@ class ContextDb:
         if not self.check_password(user_id, old_password):
             return False
         print("Changing password...")
+        t = Table(USERS_TABLE)
         new_password_hash = hashpw(new_password.encode("utf-8"), gensalt())
-        update_statement = f"update {USERS_TABLE} set password_hash = '{new_password_hash}' where id = {user_id}"
+        query = Query.update(t).set(t.password_hash, Binary(new_password_hash)).where(t.id == user_id)
         try:
             with self.connection.cursor() as cur:
-                cur.execute(update_statement)
+                cur.execute(str(query))
                 self.connection.commit()
                 return True
         except Exception as e:
             print(f"Exception attempting to change password: {e}")
         return False
 
-    def delete_user(self, user_id, password):
-        if not self.check_password(user_id, password):
-            return False
+    def delete_user(self, user_id):
         print("Deleting user...")
         delete_statement = f"delete from {USERS_TABLE} where id = {user_id}"
         try:
@@ -176,9 +176,10 @@ class ContextDb:
 
         print("Attempting to insert new user...")
         current_time = datetime.utcnow()
+        password_hash = hashpw(password.encode("utf-8"), gensalt())
         new_user = {
             "email": email,
-            "password_hash": hashpw(password.encode("utf-8"), gensalt()),
+            "password_hash": Binary(password_hash),
             "registered_at": current_time,
             "messages_last_checked_at": current_time,
         }
@@ -226,7 +227,7 @@ class ContextDb:
     def delete_messages(self, recipient_id, message_ids):
         print("Deleting messages...")
         delete_statement = f"delete from {MESSAGES_TABLE} where recipient_id = {recipient_id}"
-        if message_ids is None:
+        if message_ids is not None:
             message_ids = tuple(message_ids)
             delete_statement = delete_statement + f" and id in {message_ids}"
         try:
